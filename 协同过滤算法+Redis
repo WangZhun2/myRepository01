@@ -1,0 +1,217 @@
+package com.pharos.utils;
+
+
+
+import org.aspectj.weaver.ast.Test;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+
+import java.time.LocalDate;
+import java.util.*;
+
+public class UserRA {
+    public static void main(String[] args) {
+        Scanner sc = new Scanner(System.in);
+        /*
+        输入商品ID（int）样例：
+        1 2 3 4 5 6
+        1 2 3 4 6 7
+        1 2 3 6 7 8
+        1 2 6 7 8 9
+        1 6 7 8 9 10
+        6 7 8 9 10 11
+        */
+
+        /**
+         * 从Redis池，中获取jedis
+         */
+        ApplicationContext app = new ClassPathXmlApplicationContext("spring/applicationContext.xml");
+        JedisPool jedisPool = (JedisPool) app.getBean("jedisPools");
+        Jedis jedis = jedisPool.getResource();
+        jedis.flushAll();
+
+        /**
+         * 基于项(item-based)的推荐系统。主要依据的是项与项之间的相似性。         即商品和商品
+         *  基于用户(user-based)的推荐系统。主要依据的是用户与用户之间的相似性。   用户和用户（✔）
+         */
+
+        /**
+         * 查数据库，确认有效用户数目
+         */
+        int N;
+        System.out.println("数入用户数如：6");
+        N = sc.nextInt();
+
+        /**
+         * 建立用户的稀疏矩阵，用于用户相似度计算【相似度矩阵】
+         * 稀疏矩阵:非零元素的个数远远小于矩阵0元素的总数，且非0元素分布没有规律
+         * 优点：只对非零元素进行操作
+         * 缺点：不规则算法，计算访存比很低。可以在用户访问量少的零碎时间进行计算
+         * 注：要初始化值
+         */
+        int[][] SimilarMatrix = new int[N][N];
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                SimilarMatrix[i][j] = 0;
+            }
+        }
+
+
+        /**
+         * 存储每个用户对应的，足迹商品总数。
+         * 及对应的商品ID
+         */
+        HashMap<Integer, Integer> userGoodsNumber = new HashMap();
+        //============数据库，查出每个用户的商品数==========
+        Map<Integer, ArrayList<Integer>> map = new HashMap();
+        for (int i = 0; i < N; i++) {
+            System.out.println("第" + i+1 + "个" + "用户的id(long型)");
+            int id = sc.nextInt();
+            System.out.println("输入商品数");
+            int n = sc.nextInt();
+            userGoodsNumber.put(id, n);
+            ArrayList<Integer> arrayList = new ArrayList();
+            System.out.println("输入"+n+"个商品");
+            for (int j = 0; j < n; j++) {
+                int goodsId = sc.nextInt();
+                arrayList.add(goodsId);
+            }
+            map.put(id, arrayList);
+        }
+
+
+        /**
+         * 建立用户倒排索引invertedIndex
+         * 目的：用来记录关键字在各个用户中出现位置的映射，快速获取包含这个单词的用户列表
+         */
+        HashMap<Integer, Set<Integer>> invertedIndex = new HashMap();
+
+
+        /**
+         * 辅助存储，物品集合
+         */
+        Set<Integer> items = new HashSet();
+
+
+        /**  userNo
+         * 建立用户和稀疏矩阵位置的相互映射
+         */
+        Map<Integer, Integer> userNo = new HashMap();
+        Map<Integer, Integer> noUser = new HashMap();
+
+        //=====查数据库，1.建立用户和稀疏矩阵位置的相互映射
+        // 2.将商品信息存入辅助物品结合中，建立商品和用户的倒排索引
+
+        //矩阵的行和列
+        int n = 0;
+        Iterator iter = map.entrySet().iterator();
+        while (iter.hasNext()) {
+            Map.Entry entry = (Map.Entry) iter.next();
+            Integer key = (Integer) entry.getKey();
+            ArrayList<Integer> value = (ArrayList<Integer>) entry.getValue();
+            //1.建立用户和稀疏矩阵位置的相互映射
+            userNo.put(key, n);
+            noUser.put(n, key);
+            ++n;
+            for (Integer t : value) {
+
+                if (items.contains(t)) {
+                    //如果已经包含对应的物品--用户映射，直接添加对应的用户
+                    invertedIndex.get(t).add(key);
+                } else {//否则创建对应物品--用户集合映射
+                    items.add(t);
+                    invertedIndex.put(t, new HashSet<Integer>());
+                    //创建物品--用户倒排关系
+                    invertedIndex.get(t).add(key);
+                }
+            }
+        }
+
+
+        /**
+         * 似度矩阵，进行信息填充
+         */
+        Set<Map.Entry<Integer, Set<Integer>>> entrySet = invertedIndex.entrySet();
+        Iterator<Map.Entry<Integer, Set<Integer>>> it = entrySet.iterator();
+        while (it.hasNext()) {
+            //倒排索引集合
+            Set<Integer> commonUsers = it.next().getValue();
+            /**
+             * 遍历倒排索引集合，查看像似度
+             * user_u 当前用户
+             * user_v 其用户
+             *
+             */
+            for (Integer user_u : commonUsers) {
+                for (Integer user_v : commonUsers) {
+                    if (user_u.equals(user_v)) {
+                        continue;
+                    }
+                    //当前用户，和其他用户的商品像似度,用几个商品相同，对应位置为几
+                    SimilarMatrix[userNo.get(user_u)][userNo.get(user_v)] += 1;
+                }
+            }
+        }
+
+        /**
+         * java8引入了一套全新的时间日期API,time包中的是类是不可变且线程安全的.所有类都是不可变的、所以线程安全的。
+         *
+         ●Instant——它代表的是时间戳
+         ●LocalDate——不包含具体时间的日期，比如2018-04-02。它可以用来存储生日，周年纪念日，入职日期等。
+         ●LocalTime——它代表的是不含日期的时间
+         ●LocalDateTime——它包含了日期及时间，不过还是没有偏移信息或者说时区。
+         ●ZonedDateTime——这是一个包含时区的完整的日期时间，偏移量是以UTC/格林威治时间为基准的。
+         */
+        LocalDate now = LocalDate.now();
+        System.out.println(now);
+
+        /**
+         * 计算当前用户和其他用户，之间的像似度，（余弦相似度）
+         * AB的像似度/（A的商品数*B的商品数）
+         */
+        Iterator iter1 = map.entrySet().iterator();
+        while (iter1.hasNext()) {
+            Map.Entry entry = (Map.Entry) iter1.next();
+            Integer recommendUser = (Integer) entry.getKey();
+            System.out.println("==用户ID:" + recommendUser + "================");
+            Integer recommenduserNo = userNo.get(recommendUser);
+            for (int j = 0; j < N; j++) {
+                if (j != recommenduserNo) {
+                    System.out.println(noUser.get(recommenduserNo) + "和" + noUser.get(j) + "相似物品数:" + SimilarMatrix[recommenduserNo][j]);
+                }
+            }
+
+            /**
+             * 计算当前用户和其他用户像似度求商品的推荐指数，（余弦相似度）
+             */
+            for (Integer item : items) {
+                //得到查看当前物品的所有用户集合
+                Set<Integer> users = invertedIndex.get(item);
+                if (!users.contains(recommendUser)) {
+                    double itemRecommendDegree = 0.0;
+                    for (Integer user : users) {
+                        //推荐度计算
+                        itemRecommendDegree += SimilarMatrix[userNo.get(recommendUser)][userNo.get(user)] / Math.sqrt(userGoodsNumber.get(recommendUser) * userGoodsNumber.get(user));
+                    }
+                    jedis.zadd(now.toString() + recommendUser.toString(), itemRecommendDegree, item.toString());
+                }
+            }
+            System.out.println("================================");
+
+        }
+
+
+        //直接获取各个用户的推荐商品
+        Iterator iter2 = map.entrySet().iterator();
+        while (iter2.hasNext()) {
+            Map.Entry entry = (Map.Entry) iter2.next();
+            Integer recommendUser = (Integer) entry.getKey();
+            //当然也可以，根据业务需要来。单个获取用户的被推荐商品
+            Set<String> zrevrange = jedis.zrevrange(now.toString() + recommendUser.toString(), 0, 10);
+            System.out.println("用户id:"+recommendUser+"对应的推荐商品"+zrevrange.toString());
+        }
+
+    }
+}
